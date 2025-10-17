@@ -1,0 +1,21 @@
+void setup() {
+  Serial.begin(9600);
+  
+  pinMode(2, INPUT_PULLUP);
+  pinMode(4, INPUT_PULLUP);
+  pinMode(7, INPUT_PULLUP);
+  pinMode(8, INPUT_PULLUP);
+}
+
+void loop() {
+  if (digitalRead(2) == LOW)
+    Serial.println("Button 1 Pressed");
+  if (digitalRead(4) == LOW)
+    Serial.println("Button 2 Pressed");
+  if (digitalRead(7) == LOW)
+    Serial.println("Button 3 Pressed");
+  if (digitalRead(8) == LOW)
+    Serial.println("Button 4 Pressed");
+
+  delay(200);
+}
