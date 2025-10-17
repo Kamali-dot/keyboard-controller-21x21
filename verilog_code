@@ -1,0 +1,204 @@
+`timescale 1ns / 1ps
+
+module keyboard_controller_21x21 (
+    input wire clk,              
+    input wire rst_n,            
+    input wire [20:0] row_in,    
+    output reg [20:0] col_scan,  
+    output reg [9:0] key_code,   
+    output reg key_valid,        
+    output reg key_repeat,       
+    output wire fifo_empty,      
+    output wire fifo_full        
+);
+
+    parameter DEBOUNCE_TIME = 20'd50000;      
+    parameter REPEAT_DELAY = 28'd25000000;    
+    parameter REPEAT_RATE = 28'd2500000;      
+    parameter SCAN_PERIOD = 12'd2100;         
+    
+    localparam IDLE = 3'd0;
+    localparam SCAN = 3'd1;
+    localparam DETECT = 3'd2;
+    localparam DEBOUNCE = 3'd3;
+    localparam VALIDATE = 3'd4;
+    localparam REPEAT_WAIT = 3'd5;
+    
+    reg [2:0] state, next_state;
+    reg [4:0] col_idx;           
+    reg [4:0] row_idx;           
+    reg [9:0] detected_key;      
+    reg [9:0] last_key;          
+    reg [19:0] debounce_cnt;     
+    reg [27:0] repeat_cnt;       
+    reg [11:0] scan_cnt;         
+    reg key_pressed;             
+    reg key_stable;              
+    
+    reg [9:0] fifo_buffer [0:7];
+    reg [2:0] fifo_wr_ptr;
+    reg [2:0] fifo_rd_ptr;
+    reg [3:0] fifo_count;
+    
+    assign fifo_empty = (fifo_count == 4'd0);
+    assign fifo_full = (fifo_count == 4'd8);
+    
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            col_scan <= 21'b000000000000000000001;
+            col_idx <= 5'd0;
+            scan_cnt <= 12'd0;
+        end else begin
+            if (scan_cnt >= SCAN_PERIOD) begin
+                scan_cnt <= 12'd0;
+                if (col_idx == 5'd20) begin
+                    col_idx <= 5'd0;
+                    col_scan <= 21'b000000000000000000001;
+                end else begin
+                    col_idx <= col_idx + 5'd1;
+                    col_scan <= col_scan << 1;
+                end
+            end else begin
+                scan_cnt <= scan_cnt + 12'd1;
+            end
+        end
+    end
+    
+    function automatic [4:0] priority_encode;
+        input [20:0] rows;
+        integer i;
+        begin
+            priority_encode = 5'd0;
+            for (i = 20; i >= 0; i = i - 1) begin
+                if (rows[i] == 1'b1) begin
+                    priority_encode = i[4:0];
+                end
+            end
+        end
+    endfunction
+    
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            state <= IDLE;
+        else
+            state <= next_state;
+    end
+    
+    always @(*) begin
+        next_state = state;
+        case (state)
+            IDLE: begin
+                if (|row_in)
+                    next_state = DETECT;
+            end
+            DETECT: begin
+                next_state = DEBOUNCE;
+            end
+            DEBOUNCE: begin
+                if (debounce_cnt >= DEBOUNCE_TIME)
+                    next_state = VALIDATE;
+            end
+            VALIDATE: begin
+                if (key_stable)
+                    next_state = REPEAT_WAIT;
+                else
+                    next_state = IDLE;
+            end
+            REPEAT_WAIT: begin
+                if (!key_pressed)
+                    next_state = IDLE;
+                else if (repeat_cnt >= REPEAT_DELAY)
+                    next_state = VALIDATE;
+            end
+            default: next_state = IDLE;
+        endcase
+    end
+    
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            detected_key <= 10'd0;
+            last_key <= 10'd0;
+            row_idx <= 5'd0;
+            debounce_cnt <= 20'd0;
+            repeat_cnt <= 28'd0;
+            key_pressed <= 1'b0;
+            key_stable <= 1'b0;
+            key_valid <= 1'b0;
+            key_repeat <= 1'b0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    key_valid <= 1'b0;
+                    key_repeat <= 1'b0;
+                    debounce_cnt <= 20'd0;
+                    repeat_cnt <= 28'd0;
+                    if (|row_in) begin
+                        key_pressed <= 1'b1;
+                    end
+                end
+                
+                DETECT: begin
+                    row_idx <= priority_encode(row_in);
+                    detected_key <= col_idx * 5'd21 + priority_encode(row_in);
+                end
+                
+                DEBOUNCE: begin
+                    debounce_cnt <= debounce_cnt + 20'd1;
+                    if (row_in[row_idx] && col_scan[col_idx])
+                        key_stable <= 1'b1;
+                    else
+                        key_stable <= 1'b0;
+                end
+                
+                VALIDATE: begin
+                    if (key_stable) begin
+                        if (detected_key != last_key) begin
+                            key_code <= detected_key;
+                            last_key <= detected_key;
+                            key_valid <= 1'b1;
+                            key_repeat <= 1'b0;
+                            repeat_cnt <= 28'd0;
+                        end else begin
+                            key_code <= detected_key;
+                            key_valid <= 1'b1;
+                            key_repeat <= 1'b1;
+                            repeat_cnt <= 28'd0;
+                        end
+                    end
+                    debounce_cnt <= 20'd0;
+                end
+                
+                REPEAT_WAIT: begin
+                    key_valid <= 1'b0;
+                    if (row_in[row_idx] && col_scan[col_idx]) begin
+                        repeat_cnt <= repeat_cnt + 28'd1;
+                        key_pressed <= 1'b1;
+                    end else begin
+                        key_pressed <= 1'b0;
+                        last_key <= 10'd0;
+                    end
+                end
+                
+                default: begin
+                    key_valid <= 1'b0;
+                    key_repeat <= 1'b0;
+                end
+            endcase
+        end
+    end
+    
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fifo_wr_ptr <= 3'd0;
+            fifo_rd_ptr <= 3'd0;
+            fifo_count <= 4'd0;
+        end else begin
+            if (key_valid && !fifo_full) begin
+                fifo_buffer[fifo_wr_ptr] <= key_code;
+                fifo_wr_ptr <= fifo_wr_ptr + 3'd1;
+                fifo_count <= fifo_count + 4'd1;
+            end
+        end
+    end
+
+endmodule
